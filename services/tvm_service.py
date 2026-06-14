@@ -23,7 +23,7 @@ import math
 import json
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from app.db import database as db
+from db import database as db
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 TVM_AUTO_VERIFY_THRESHOLD    = 0.80

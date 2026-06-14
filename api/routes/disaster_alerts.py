@@ -7,8 +7,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from typing import Optional
-from app.core.security import get_current_user, require_authority
-from app.db import database as db
+from core.security import get_current_user, require_authority
+from db import database as db
 
 router = APIRouter()
 

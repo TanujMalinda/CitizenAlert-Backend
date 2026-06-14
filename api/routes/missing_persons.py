@@ -5,10 +5,10 @@ Implements Research Objectives 1, 2, and 3.
 import uuid
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
-from app.schemas.schemas import CreateMissingPersonRequest, SightingRequest
-from app.core.security import get_current_user, require_authority
-from app.services.tvm_service import process_tvm
-from app.db import database as db
+from schemas.schemas import CreateMissingPersonRequest, SightingRequest
+from core.security import get_current_user, require_authority
+from services.tvm_service import process_tvm
+from db import database as db
 
 router = APIRouter()
 

@@ -3,9 +3,9 @@ Auth routes — /api/auth
 """
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
-from app.schemas.schemas import RegisterRequest, LoginRequest, TokenResponse
-from app.core.security import create_token, get_current_user
-from app.db import database as db
+from schemas.schemas import RegisterRequest, LoginRequest, TokenResponse
+from core.security import create_token, get_current_user
+from db import database as db
 
 router = APIRouter()
 

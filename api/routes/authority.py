@@ -5,8 +5,8 @@ All endpoints require the 'authority' role.
 """
 from fastapi import APIRouter, Depends, Query, HTTPException
 from typing import Optional
-from app.core.security import require_authority
-from app.db import database as db
+from core.security import require_authority
+from db import database as db
 
 router = APIRouter()
 
