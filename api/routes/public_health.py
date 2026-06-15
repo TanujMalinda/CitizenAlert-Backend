@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
+from services.tvm_service import process_tvm_for_alert
 from db import database as db
 
 router = APIRouter()
@@ -164,18 +165,35 @@ async def create_health_alert(
         body.official_source,
     )
 
-    tvm_action = "official_source_bypass" if tvm_status == "verified" \
-                 else "escalated_to_authority"
-    tvm_note   = "Health alert from authority — TVM bypassed" if tvm_status == "verified" \
-                 else "Health alert — critical sensitivity, mandatory medical authority review"
-
-    await db.execute(
-        """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
-           VALUES ($1, $2, $3, $4, $5)""",
-        alert_id,
-        1 if tvm_status == "verified" else 3,
-        tvm_action, user_id, tvm_note,
-    )
+    tvm_score = 1.0
+    if tvm_status == "verified":
+        # Authority with official source — bypass TVM
+        await db.execute(
+            """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
+               VALUES ($1, 1, 'official_source_bypass', $2,
+                       'Health alert from authority — TVM bypassed per official source')""",
+            alert_id, user_id,
+        )
+    else:
+        # Citizen submission — run Tier 1 + 2 to compute score, then escalate to Tier 3
+        tvm_result = await process_tvm_for_alert(
+            latitude=body.latitude,
+            longitude=body.longitude,
+            description=body.description,
+            user_id=user_id,
+            alert_id=alert_id,
+        )
+        tvm_score = tvm_result.score
+        await db.execute(
+            "UPDATE alerts SET tvm_score = $1 WHERE id = $2",
+            tvm_score, alert_id,
+        )
+        await db.execute(
+            """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
+               VALUES ($1, 3, 'escalated_to_authority', $2,
+                       'Health alert — critical sensitivity, mandatory medical authority review')""",
+            alert_id, user_id,
+        )
 
     return {
         "success":        True,
@@ -183,6 +201,7 @@ async def create_health_alert(
         "cap_identifier": cap_id,
         "disease_type":   body.disease_type,
         "tvm_status":     tvm_status,
+        "tvm_score":      tvm_score,
         "message":        "Health alert created and broadcast" if tvm_status == "verified"
                           else "Health concern submitted — pending medical authority review before public dissemination",
         "note":           "Critical sensitivity — TVM Tier 3 mandatory for citizen submissions",

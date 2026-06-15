@@ -5,6 +5,7 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from schemas.schemas import RegisterRequest, LoginRequest, TokenResponse
 from core.security import create_token, get_current_user
+from core.errors import http_error
 from db import database as db
 
 router = APIRouter()
@@ -32,7 +33,11 @@ async def register(body: RegisterRequest):
         "SELECT id FROM users WHERE email = $1", body.email
     )
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        http_error(
+            400,
+            "An account with this email address already exists.",
+            "Try logging in instead, or use a different email to register.",
+        )
 
     # Hash password
     hashed = bcrypt.hashpw(
@@ -50,8 +55,7 @@ async def register(body: RegisterRequest):
     )
 
     if not row:
-        raise HTTPException(status_code=500,
-                            detail="Registration failed — database error")
+        http_error(500, "Registration failed due to a database error.", "Please try again later.")
 
     user = dict(row)
     token = create_token({
@@ -76,8 +80,7 @@ async def login(body: LoginRequest):
     )
 
     if not row:
-        raise HTTPException(status_code=401,
-                            detail="Invalid email or password")
+        http_error(401, "Invalid email or password.", "Check your credentials and try again.")
 
     user = dict(row)
 
@@ -86,8 +89,7 @@ async def login(body: LoginRequest):
         body.password.encode(),
         user["password_hash"].encode()
     ):
-        raise HTTPException(status_code=401,
-                            detail="Invalid email or password")
+        http_error(401, "Invalid email or password.", "Check your credentials and try again.")
 
     token = create_token({
         "id":       str(user["id"]),
@@ -116,5 +118,5 @@ async def me(user: dict = Depends(get_current_user)):
         int(user["id"]) if str(user["id"]).isdigit() else 0,
     )
     if not row:
-        raise HTTPException(status_code=404, detail="User not found")
+        http_error(404, "User account not found.", "Your token may reference a deleted account. Please register again.")
     return {"success": True, "user": dict(row)}

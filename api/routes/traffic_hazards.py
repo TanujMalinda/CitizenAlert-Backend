@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
+from services.tvm_service import process_tvm_for_alert
 from db import database as db
 
 router = APIRouter()
@@ -183,6 +184,16 @@ async def create_traffic_hazard(
             "message":           "Duplicate detected — confirmation count incremented",
         }
 
+    # Tier 1 filter — validate before creating the alert
+    from services.tvm_service import run_tier1
+    t1 = await run_tier1({
+        "latitude": body.latitude,
+        "longitude": body.longitude,
+        "description": body.description,
+    })
+    if not t1.passed:
+        raise HTTPException(status_code=400, detail=f"TVM Tier 1 rejected: {t1.reason}")
+
     # New hazard report
     row = await db.fetchrow(
         """INSERT INTO alerts
@@ -214,21 +225,29 @@ async def create_traffic_hazard(
         alert_id, body.hazard_type, body.road_segment, clear_time,
     )
 
+    # TVM Tier 1 passed — run Tier 2 to store base score; Tier 2 for traffic is
+    # crowdsourced consensus (confirmation_count), not the sighting-based scorer
+    tvm_result = await process_tvm_for_alert(
+        latitude=body.latitude,
+        longitude=body.longitude,
+        description=body.description,
+        user_id=user_id,
+        alert_id=alert_id,
+    )
     await db.execute(
-        """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
-           VALUES ($1, 1, 'initial_submission', $2,
-                   'Traffic hazard submitted — awaiting crowdsourced consensus')""",
-        alert_id, user_id,
+        "UPDATE alerts SET tvm_score = $1 WHERE id = $2",
+        tvm_result.score, alert_id,
     )
 
     return {
-        "success":           True,
-        "alert_id":          alert_id,
-        "cap_identifier":    cap_id,
-        "tvm_status":        "pending_consensus",
+        "success":            True,
+        "alert_id":           alert_id,
+        "cap_identifier":     cap_id,
+        "tvm_status":         "pending_consensus",
+        "tvm_score":          tvm_result.score,
         "confirmation_count": 1,
         "consensus_threshold": CONSENSUS_AUTO_VERIFY_COUNT,
-        "message":           f"Traffic hazard reported. {CONSENSUS_AUTO_VERIFY_COUNT - 1} more confirmations needed for auto-verification.",
+        "message":            f"Traffic hazard reported. {CONSENSUS_AUTO_VERIFY_COUNT - 1} more confirmations needed for auto-verification.",
     }
 
 

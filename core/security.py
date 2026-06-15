@@ -4,6 +4,7 @@ from typing import Optional
 from jose import jwt, JWTError
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from core.errors import http_error
 
 SECRET_KEY = "secret_key_change_me"
 ALGORITHM = "HS256"
@@ -43,7 +44,11 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     payload = decode_token(token)
 
     if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        http_error(
+            401,
+            "Your session token is invalid or has expired.",
+            "Log in again via POST /api/auth/login to get a fresh token.",
+        )
 
     return payload
 
@@ -53,5 +58,9 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # ---------------------------
 def require_authority(user=Depends(get_current_user)):
     if user.get("role") != "authority":
-        raise HTTPException(status_code=403, detail="Not authorized")
+        http_error(
+            403,
+            "This endpoint requires authority-level access.",
+            "Your account role is 'citizen'. Contact an admin if this is a mistake.",
+        )
     return user

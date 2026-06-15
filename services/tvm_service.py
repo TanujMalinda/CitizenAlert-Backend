@@ -248,6 +248,64 @@ async def process_tvm(report: dict, alert: dict, reporter: dict) -> TVMResult:
     )
 
 
+# ── TVM for new alert submissions (crime / health / traffic) ─────────────────
+
+async def process_tvm_for_alert(
+    latitude: float,
+    longitude: float,
+    description: str,
+    user_id: int | None,
+    alert_id: int | None = None,
+) -> TVMResult:
+    """
+    Runs Tier 1 + Tier 2 for a freshly submitted alert (not a sighting).
+    Tier 3 routing is left to the caller — crime and health always escalate
+    regardless of score; traffic uses consensus instead.
+    The computed score is stored so authorities can prioritise their queue.
+    """
+    reporter_row = await db.fetchrow(
+        "SELECT trust_score FROM users WHERE id = $1", user_id
+    ) if user_id else None
+    reporter = {
+        "trust_score": float(reporter_row["trust_score"])
+        if reporter_row and reporter_row.get("trust_score") else 0.50
+    }
+
+    report = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "description": description,
+        "reported_by": user_id,
+        # No alert_id / sighting_time — new submission, not a sighting
+    }
+
+    # Tier 1 — geo + content filter
+    t1 = await run_tier1(report)
+    await _log_tvm(
+        alert_id=alert_id, tier=1,
+        action="filter_pass" if t1.passed else "filter_fail",
+        notes=t1.reason,
+    )
+    if not t1.passed:
+        return TVMResult(tier=1, status="rejected", score=0.0, message=t1.reason)
+
+    # Tier 2 — confidence scoring
+    # alert={} → location_plausibility defaults to 0.70, corroboration to 0.50
+    t2 = await run_tier2(report, {}, reporter)
+    await _log_tvm(
+        alert_id=alert_id, tier=2, action="score_calculated",
+        notes=f"score={t2.score} cctv_boost={t2.components.cctv_boost}",
+    )
+
+    return TVMResult(
+        tier=2,
+        status="scored",
+        score=t2.score,
+        components=t2.components,
+        message=f"TVM score: {t2.score}",
+    )
+
+
 # ── Scoring helper functions ──────────────────────────────────────────────────
 
 def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:

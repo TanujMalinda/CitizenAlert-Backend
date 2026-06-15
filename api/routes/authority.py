@@ -4,6 +4,7 @@ Backing API for the React Authority Dashboard (TVM Tier-3 review console).
 All endpoints require the 'authority' role.
 """
 from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel
 from typing import Optional
 from core.security import require_authority
 from db import database as db
@@ -13,6 +14,63 @@ router = APIRouter()
 VALID_ALERT_TYPES = [
     "missing_person", "disaster", "crime", "traffic", "health"
 ]
+
+
+class ReviewAlertRequest(BaseModel):
+    action: str            # "verify" | "reject"
+    notes: Optional[str] = None
+
+
+# ── POST /alerts/{id}/review — Unified Tier 3 review action ──────────────────
+@router.post(
+    "/alerts/{alert_id}/review",
+    summary="Unified authority review — verify or reject any alert (authority only)",
+    description="""
+Tier 3 review action for the authority dashboard.
+Works across all five alert categories from a single endpoint.
+- **verify** → alert becomes publicly visible to citizens
+- **reject** → alert removed from public feed
+    """,
+)
+async def review_alert(
+    alert_id: int,
+    body: ReviewAlertRequest,
+    user: dict = Depends(require_authority),
+):
+    if body.action not in ["verify", "reject"]:
+        raise HTTPException(status_code=400, detail="Action must be 'verify' or 'reject'")
+
+    row = await db.fetchrow(
+        "SELECT id, alert_type, tvm_status FROM alerts WHERE id = $1", alert_id
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    user_id    = int(user["id"])
+    tvm_status = "verified" if body.action == "verify" else "rejected"
+
+    await db.execute(
+        "UPDATE alerts SET tvm_status = $1, resolved_by = $2 WHERE id = $3",
+        tvm_status, user_id, alert_id,
+    )
+
+    await db.execute(
+        """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
+           VALUES ($1, 3, $2, $3, $4)""",
+        alert_id,
+        f"authority_{body.action}d",
+        user_id,
+        body.notes or f"Alert {body.action}d by authority via unified dashboard",
+    )
+
+    return {
+        "success":    True,
+        "alert_id":   alert_id,
+        "alert_type": row["alert_type"],
+        "tvm_status": tvm_status,
+        "action":     body.action,
+        "message":    f"{row['alert_type'].title()} alert {body.action}d successfully",
+    }
 
 
 # ── GET /stats — Dashboard summary cards ──────────────────────────────────────

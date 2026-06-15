@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
+from services.tvm_service import process_tvm_for_alert
 from db import database as db
 
 router = APIRouter()
@@ -156,11 +157,24 @@ async def create_crime_report(
         body.police_case_number,
     )
 
-    # Log TVM — crime always goes to Tier 3
+    # TVM Tier 1 + 2 — compute and store score even though Tier 3 is mandatory
+    tvm_result = await process_tvm_for_alert(
+        latitude=body.latitude,
+        longitude=body.longitude,
+        description=body.description,
+        user_id=user_id,
+        alert_id=alert_id,
+    )
+    await db.execute(
+        "UPDATE alerts SET tvm_score = $1 WHERE id = $2",
+        tvm_result.score, alert_id,
+    )
+
+    # Tier 3 — crime is always high-sensitivity, always escalated regardless of score
     await db.execute(
         """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
            VALUES ($1, 3, 'escalated_to_authority', $2,
-                   'Crime report — mandatory authority review (high sensitivity)')""",
+                   'Crime report — mandatory Tier 3 review (high sensitivity category)')""",
         alert_id, user_id,
     )
 
@@ -169,6 +183,7 @@ async def create_crime_report(
         "alert_id":       alert_id,
         "cap_identifier": cap_id,
         "tvm_status":     "pending_authority_review",
+        "tvm_score":      tvm_result.score,
         "message":        "Crime report submitted. Under authority review before public dissemination.",
         "note":           "High-sensitivity alert — TVM Tier 3 mandatory review applies",
     }
