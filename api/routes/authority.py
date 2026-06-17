@@ -6,7 +6,7 @@ All endpoints require the 'authority' role.
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from core.security import require_authority
+from core.security import require_authority, require_super_admin
 from db import database as db
 
 router = APIRouter()
@@ -19,6 +19,97 @@ VALID_ALERT_TYPES = [
 class ReviewAlertRequest(BaseModel):
     action: str            # "verify" | "reject"
     notes: Optional[str] = None
+
+
+class ReviewRegistrationRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+# ── Authority Registration Management (super_admin only) ─────────────────────
+
+@router.get(
+    "/registrations",
+    summary="List pending authority registration requests (super-admin only)",
+)
+async def list_registrations(
+    status: Optional[str] = Query("pending_approval"),
+    user: dict = Depends(require_super_admin),
+):
+    rows = await db.fetch(
+        """SELECT id, full_name, email, district, designation, department,
+                  employee_id, account_status, created_at
+           FROM users
+           WHERE role = 'authority'
+             AND ($1::text IS NULL OR account_status = $1)
+           ORDER BY created_at DESC""",
+        status,
+    )
+    data = [dict(r) for r in rows] if rows else []
+    return {"success": True, "count": len(data), "data": data}
+
+
+@router.post(
+    "/registrations/{user_id}/approve",
+    summary="Approve an authority registration (super-admin only)",
+)
+async def approve_registration(
+    user_id: int,
+    body: ReviewRegistrationRequest,
+    admin: dict = Depends(require_super_admin),
+):
+    row = await db.fetchrow(
+        "SELECT id, full_name, email, account_status FROM users WHERE id = $1 AND role = 'authority'",
+        user_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Authority registration not found")
+    if row["account_status"] != "pending_approval":
+        raise HTTPException(status_code=400, detail=f"Account is already '{row['account_status']}'")
+
+    await db.execute(
+        "UPDATE users SET account_status = 'active' WHERE id = $1",
+        user_id,
+    )
+    return {
+        "success":  True,
+        "user_id":  user_id,
+        "email":    row["email"],
+        "status":   "active",
+        "message":  f"Authority account for {row['full_name']} approved. They can now log in.",
+        "notes":    body.notes,
+    }
+
+
+@router.post(
+    "/registrations/{user_id}/reject",
+    summary="Reject an authority registration (super-admin only)",
+)
+async def reject_registration(
+    user_id: int,
+    body: ReviewRegistrationRequest,
+    admin: dict = Depends(require_super_admin),
+):
+    row = await db.fetchrow(
+        "SELECT id, full_name, email, account_status FROM users WHERE id = $1 AND role = 'authority'",
+        user_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Authority registration not found")
+    if row["account_status"] == "rejected":
+        raise HTTPException(status_code=400, detail="Account is already rejected")
+
+    await db.execute(
+        "UPDATE users SET account_status = 'rejected' WHERE id = $1",
+        user_id,
+    )
+    return {
+        "success":  True,
+        "user_id":  user_id,
+        "email":    row["email"],
+        "status":   "rejected",
+        "message":  f"Authority registration for {row['full_name']} rejected.",
+        "notes":    body.notes,
+    }
 
 
 # ── POST /alerts/{id}/review — Unified Tier 3 review action ──────────────────

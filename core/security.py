@@ -57,10 +57,23 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # Authority check
 # ---------------------------
 def require_authority(user=Depends(get_current_user)):
-    if user.get("role") != "authority":
+    if user.get("role") not in ("authority", "super_admin"):
         http_error(
             403,
             "This endpoint requires authority-level access.",
             "Your account role is 'citizen'. Contact an admin if this is a mistake.",
+        )
+    return user
+
+
+# ---------------------------
+# Super-admin check
+# ---------------------------
+def require_super_admin(user=Depends(get_current_user)):
+    if user.get("role") != "super_admin":
+        http_error(
+            403,
+            "This endpoint requires super-admin access.",
+            "Only system administrators can perform this action.",
         )
     return user

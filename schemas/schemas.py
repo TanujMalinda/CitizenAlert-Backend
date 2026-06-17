@@ -12,6 +12,17 @@ class RegisterRequest(BaseModel):
     district: str = "Colombo"
     role: str = "citizen"
 
+
+class AuthorityRegisterRequest(BaseModel):
+    full_name: str
+    email: str
+    password: str
+    phone_number: Optional[str] = None
+    district: str = "Colombo"
+    designation: str            # e.g. "Police Officer", "Health Inspector"
+    department: str             # e.g. "Sri Lanka Police", "Ministry of Health"
+    employee_id: str            # official employee / badge ID
+
 class LoginRequest(BaseModel):
     email: str
     password: str
