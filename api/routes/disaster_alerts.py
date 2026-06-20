@@ -128,7 +128,7 @@ async def create_disaster_alert(
              (title, description, latitude, longitude, status, user_id,
               alert_type, tvm_status, tvm_score, severity, district, geom)
            VALUES ($1, $2, $3, $4, 'active', $5,
-                   'disaster', 'verified', 100, $6, $7,
+                   'disaster', 'verified', 1.0, $6, $7,
                    ST_SetSRID(ST_MakePoint($4, $3), 4326))
            RETURNING id""",
         body.title, body.description,

@@ -185,8 +185,8 @@ async def create_health_alert(
         )
         tvm_score = tvm_result.score
         await db.execute(
-            "UPDATE alerts SET tvm_score = $1 WHERE id = $2",
-            tvm_score, alert_id,
+            "UPDATE alerts SET tvm_score = $1::float8 WHERE id = $2",
+            float(tvm_score), alert_id,
         )
         await db.execute(
             """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)

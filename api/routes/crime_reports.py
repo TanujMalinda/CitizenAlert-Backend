@@ -166,8 +166,8 @@ async def create_crime_report(
         alert_id=alert_id,
     )
     await db.execute(
-        "UPDATE alerts SET tvm_score = $1 WHERE id = $2",
-        tvm_result.score, alert_id,
+        "UPDATE alerts SET tvm_score = $1::float8 WHERE id = $2",
+        float(tvm_result.score), alert_id,
     )
 
     # Tier 3 — crime is always high-sensitivity, always escalated regardless of score
