@@ -63,7 +63,11 @@ async def get_nearby_traffic(
     user: dict = Depends(get_current_user),
 ):
     is_authority = user.get("role") == "authority"
-    tvm_filter   = "AND a.tvm_status IN ('verified', 'passed')" \
+    # Traffic uses crowdsourced consensus: citizens MUST be able to see hazards
+    # that are still 'pending_consensus' so they can confirm them and push them
+    # toward the auto-verify threshold. Without this, a pending hazard is
+    # invisible and can never gather the confirmations it needs.
+    tvm_filter   = "AND a.tvm_status IN ('verified', 'passed', 'pending_consensus')" \
                    if not is_authority else ""
 
     rows = await db.fetch(
@@ -98,7 +102,7 @@ async def get_nearby_traffic(
         longitude, latitude, hazard_type, radius_km * 1000,
     )
 
-    data = [dict(r) for r in rows] if rows else _mock_nearby(latitude, longitude)["data"]
+    data = [dict(r) for r in rows] if rows else []
     return {
         "success": True,
         "count":   len(data),
@@ -151,13 +155,22 @@ async def create_traffic_hazard(
     )
 
     if existing:
-        # Increment confirmation count on duplicate → crowdsourced consensus
-        await db.execute(
-            """UPDATE traffic_hazards
-               SET confirmation_count = confirmation_count + 1
-               WHERE alert_id = $1""",
-            int(existing),
-        )
+        # Increment confirmation count on duplicate → crowdsourced consensus,
+        # but only once per user (UNIQUE alert_id+user_id).
+        new_confirm = await db.fetchrow(
+            """INSERT INTO alert_confirmations (alert_id, user_id)
+               VALUES ($1, $2)
+               ON CONFLICT (alert_id, user_id) DO NOTHING
+               RETURNING id""",
+            int(existing), user_id,
+        ) if user_id is not None else None
+        if new_confirm:
+            await db.execute(
+                """UPDATE traffic_hazards
+                   SET confirmation_count = confirmation_count + 1
+                   WHERE alert_id = $1""",
+                int(existing),
+            )
         new_count = await db.fetchval(
             "SELECT confirmation_count FROM traffic_hazards WHERE alert_id = $1",
             int(existing),
@@ -225,6 +238,15 @@ async def create_traffic_hazard(
         alert_id, body.hazard_type, body.road_segment, clear_time,
     )
 
+    # Reporter counts as the first confirmation (count starts at 1), so they
+    # cannot also tap Confirm on their own hazard.
+    if user_id is not None:
+        await db.execute(
+            """INSERT INTO alert_confirmations (alert_id, user_id)
+               VALUES ($1, $2) ON CONFLICT (alert_id, user_id) DO NOTHING""",
+            alert_id, user_id,
+        )
+
     # TVM Tier 1 passed — run Tier 2 to store base score; Tier 2 for traffic is
     # crowdsourced consensus (confirmation_count), not the sighting-based scorer
     tvm_result = await process_tvm_for_alert(
@@ -276,6 +298,25 @@ async def confirm_hazard(
         raise HTTPException(status_code=404, detail="Traffic hazard not found")
 
     user_id = int(user["id"]) if str(user["id"]).isdigit() else None
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="A valid user is required to confirm")
+
+    # Enforce one confirmation per user — UNIQUE(alert_id, user_id)
+    claimed = await db.fetchrow(
+        """INSERT INTO alert_confirmations (alert_id, user_id)
+           VALUES ($1, $2)
+           ON CONFLICT (alert_id, user_id) DO NOTHING
+           RETURNING id""",
+        alert_id, user_id,
+    )
+    if not claimed:
+        return {
+            "success":            False,
+            "alert_id":           alert_id,
+            "confirmation_count": int(row["confirmation_count"] or 0),
+            "already_confirmed":  True,
+            "message":            "You have already confirmed this hazard.",
+        }
 
     await db.execute(
         "UPDATE traffic_hazards SET confirmation_count = confirmation_count + 1 WHERE alert_id = $1",

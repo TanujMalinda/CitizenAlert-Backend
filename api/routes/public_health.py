@@ -99,7 +99,7 @@ async def get_nearby_health(
         longitude, latitude, disease_type, radius_km * 1000,
     )
 
-    data = [dict(r) for r in rows] if rows else _mock_nearby(latitude, longitude)["data"]
+    data = [dict(r) for r in rows] if rows else []
     return {
         "success": True,
         "count":   len(data),

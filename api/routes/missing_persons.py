@@ -55,19 +55,15 @@ async def get_nearby(
            WHERE a.alert_type = 'missing_person'
              AND a.status = 'active'
              AND COALESCE(a.tvm_status, 'passed') IN ('passed', 'verified')
-             AND ST_DWithin(
-                   COALESCE(
-                       a.geom,
-                       ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
-                   )::geography,
-                   ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-                   $3)
+           -- Missing persons are shown island-wide to everyone, regardless of
+           -- distance. The radius_km param is ignored here on purpose; distance
+           -- is still computed below so the app can display & sort by proximity.
            ORDER BY distance_km ASC
-           LIMIT 50""",
-        longitude, latitude, radius_km * 1000,
+           LIMIT 200""",
+        longitude, latitude,
     )
 
-    data = [dict(r) for r in rows] if rows else _mock_nearby(latitude, longitude)["data"]
+    data = [dict(r) for r in rows] if rows else []
 
     return {
         "success": True,
