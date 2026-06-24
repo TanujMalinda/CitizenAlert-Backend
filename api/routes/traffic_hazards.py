@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
 from services.tvm_service import process_tvm_for_alert
+from services.notification_service import notify_alert_status_change
 from db import database as db
 
 router = APIRouter()
@@ -378,6 +379,8 @@ async def resolve_hazard(
            VALUES ($1, 3, 'road_cleared', $2, $3)""",
         alert_id, user_id, notes,
     )
+
+    await notify_alert_status_change(alert_id, "resolved")
 
     return {"success": True, "alert_id": alert_id, "status": "resolved"}
 

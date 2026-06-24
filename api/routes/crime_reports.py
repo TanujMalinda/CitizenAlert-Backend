@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
 from services.tvm_service import process_tvm_for_alert
+from services.notification_service import notify_alert_status_change
 from db import database as db
 
 router = APIRouter()
@@ -287,6 +288,8 @@ async def resolve_crime_report(
            VALUES ($1, 3, 'authority_resolved', $2, $3)""",
         alert_id, user_id, resolution_notes,
     )
+
+    await notify_alert_status_change(alert_id, "resolved")
 
     return {
         "success":  True,

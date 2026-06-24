@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from core.security import require_authority, require_super_admin
+from services.notification_service import notify_alert_status_change
 from db import database as db
 
 router = APIRouter()
@@ -152,6 +153,11 @@ async def review_alert(
         f"authority_{body.action}d",
         user_id,
         body.notes or f"Alert {body.action}d by authority via unified dashboard",
+    )
+
+    # Notify the citizen who reported this alert
+    await notify_alert_status_change(
+        alert_id, "verified" if body.action == "verify" else "rejected"
     )
 
     return {

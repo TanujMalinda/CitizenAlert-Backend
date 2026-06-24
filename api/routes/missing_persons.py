@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from schemas.schemas import CreateMissingPersonRequest, SightingRequest
 from core.security import get_current_user, require_authority
 from services.tvm_service import process_tvm
+from services.notification_service import notify_alert_status_change
 from db import database as db
 
 router = APIRouter()
@@ -275,6 +276,8 @@ async def resolve_alert(
            VALUES ($1, 3, 'authority_resolved', $2, $3)""",
         alert_id, user_id, resolution_notes,
     )
+
+    await notify_alert_status_change(alert_id, "resolved")
 
     return {
         "success": True,

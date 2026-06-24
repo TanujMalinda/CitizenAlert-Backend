@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
 from services.tvm_service import process_tvm_for_alert
+from services.notification_service import notify_alert_status_change
 from db import database as db
 
 router = APIRouter()
@@ -245,6 +246,10 @@ async def review_health_alert(
         body.notes or f"Health alert {body.action}d by medical authority",
     )
 
+    await notify_alert_status_change(
+        alert_id, "verified" if body.action == "verify" else "rejected"
+    )
+
     return {
         "success":    True,
         "alert_id":   alert_id,
@@ -320,6 +325,9 @@ async def update_status(
         user_id,
         body.notes or f"Health alert status updated to {body.status}",
     )
+
+    if body.status == "resolved":
+        await notify_alert_status_change(alert_id, "resolved")
 
     return {
         "success":  True,

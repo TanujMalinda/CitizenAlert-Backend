@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
+from services.notification_service import notify_alert_status_change
 from db import database as db
 
 router = APIRouter()
@@ -401,6 +402,9 @@ async def update_status(
         user_id,
         body.notes or f"Status updated to {body.status}",
     )
+
+    if body.status == "resolved":
+        await notify_alert_status_change(alert_id, "resolved")
 
     return {
         "success":  True,
