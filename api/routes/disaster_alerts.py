@@ -185,14 +185,7 @@ async def create_disaster_alert(
 # ── POST /report — Citizen reports a disaster (pending authority review) ──────
 @router.post(
     "/report",
-    summary="Report a disaster (citizen) — goes to authority review",
-    description="""
-A citizen reports a suspected disaster. Unlike the authority `/` endpoint,
-this does NOT auto-verify. The report is created as **pending_authority_review**
-and routed to the authority dashboard. It only becomes visible to other citizens
-once an authority verifies it — preserving the TVM verification model for
-high-stakes disaster alerts.
-    """,
+    summary="Report a disaster (citizen) — auto-verified and immediately visible",
 )
 async def report_disaster(
     body: CreateDisasterAlertRequest,
@@ -213,13 +206,12 @@ async def report_disaster(
 
     user_id = int(user["id"]) if str(user.get("id", "")).isdigit() else None
 
-    # Insert core alert (UADM) — pending, not auto-verified
     row = await db.fetchrow(
         """INSERT INTO alerts
              (title, description, latitude, longitude, status, user_id,
               alert_type, tvm_status, tvm_score, severity, district, geom)
            VALUES ($1, $2, $3, $4, 'active', $5,
-                   'disaster', 'pending_authority_review', 0, $6, $7,
+                   'disaster', 'verified', 1.0, $6, $7,
                    ST_SetSRID(ST_MakePoint($4, $3), 4326))
            RETURNING id""",
         body.title, body.description,
@@ -248,11 +240,9 @@ async def report_disaster(
             alert_id, user_id,
         )
 
-    # Escalate to authority review queue
     await db.execute(
         """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
-           VALUES ($1, 3, 'escalated_to_authority', $2,
-                   'Citizen-reported disaster — pending authority verification')""",
+           VALUES ($1, 1, 'auto_verified', $2, 'Citizen-reported disaster — auto-verified')""",
         alert_id, user_id,
     )
 
@@ -262,9 +252,8 @@ async def report_disaster(
         "cap_identifier": cap_id,
         "hazard_type":    body.hazard_type,
         "severity":       body.severity,
-        "tvm_status":     "pending_authority_review",
-        "message":        "Disaster report submitted. Pending authority verification "
-                          "before it is broadcast to other citizens.",
+        "tvm_status":     "verified",
+        "message":        "Disaster report submitted and is now visible to citizens nearby.",
     }
 
 
