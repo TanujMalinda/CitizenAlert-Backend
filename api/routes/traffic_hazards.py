@@ -10,6 +10,7 @@ from typing import Optional
 from core.security import get_current_user, require_authority
 from services.tvm_service import process_tvm_for_alert
 from services.notification_service import notify_alert_status_change
+from core.geo import default_affected_radius
 from db import database as db
 
 router = APIRouter()
@@ -35,6 +36,7 @@ class CreateTrafficHazardRequest(BaseModel):
     district: str
     road_segment: Optional[str] = None        # human-readable road name/segment
     expected_clear_time: Optional[str] = None  # ISO datetime when hazard expected to clear
+    photo_url: Optional[str] = None            # optional scene photo (base64 data URI)
 
 
 class ConfirmTrafficHazardRequest(BaseModel):
@@ -75,6 +77,9 @@ async def get_nearby_traffic(
         f"""SELECT
                a.id, a.title, a.description, a.severity,
                a.status, a.tvm_status, a.district, a.created_at,
+               a.photo_url, a.user_id AS reporter_id,
+               a.affected_radius_km,
+               ST_AsGeoJSON(a.affected_geom) AS affected_geojson,
                th.hazard_type, th.road_segment,
                th.confirmation_count, th.expected_clear_time,
                ROUND((ST_Distance(
@@ -91,13 +96,23 @@ async def get_nearby_traffic(
              AND a.status = 'active'
              AND ($3::text IS NULL OR th.hazard_type = $3)
              {tvm_filter}
-             AND ST_DWithin(
-                   COALESCE(
-                       a.geom,
-                       ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
-                   )::geography,
-                   ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-                   $4)
+             AND (
+                   ST_DWithin(
+                       COALESCE(a.geom,
+                           ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
+                       )::geography,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                       $4)
+                OR (a.affected_geom IS NOT NULL AND ST_Intersects(
+                       a.affected_geom,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)))
+                OR (a.affected_radius_km IS NOT NULL AND ST_DWithin(
+                       COALESCE(a.geom,
+                           ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
+                       )::geography,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                       a.affected_radius_km * 1000))
+             )
            ORDER BY a.created_at DESC
            LIMIT 50""",
         longitude, latitude, hazard_type, radius_km * 1000,
@@ -212,14 +227,16 @@ async def create_traffic_hazard(
     row = await db.fetchrow(
         """INSERT INTO alerts
              (title, description, latitude, longitude, status, user_id,
-              alert_type, tvm_status, tvm_score, severity, district, geom)
+              alert_type, tvm_status, tvm_score, severity, district, photo_url,
+              affected_radius_km, geom)
            VALUES ($1, $2, $3, $4, 'active', $5,
-                   'traffic', 'pending_consensus', 0, $6, $7,
+                   'traffic', 'pending_consensus', 0, $6, $7, $8, $9,
                    ST_SetSRID(ST_MakePoint($4, $3), 4326))
            RETURNING id""",
         body.title, body.description,
         body.latitude, body.longitude,
-        user_id, body.severity, body.district,
+        user_id, body.severity, body.district, body.photo_url,
+        default_affected_radius("traffic", body.severity),
     )
     alert_id = int(row["id"])
     cap_id   = f"LK-CA-TH-{int(datetime.now().timestamp())}-{str(alert_id).zfill(6)}"

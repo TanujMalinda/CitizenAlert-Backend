@@ -1,0 +1,11 @@
+{
+  "labels": [
+    "collapsed_building",
+    "fire",
+    "flooded_areas",
+    "normal",
+    "traffic_incident"
+  ],
+  "img_size": 224,
+  "preprocess": "raw 0-255 RGB (model includes preprocessing layer)"
+}

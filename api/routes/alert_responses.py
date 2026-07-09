@@ -77,6 +77,63 @@ async def create_response(
     }
 
 
+# ── POST /{alert_id}/resolve — reporter resolves their own alert ─────────────
+@router.post(
+    "/{alert_id}/resolve",
+    summary="Resolve an alert (original reporter or authority)",
+    description="""
+Lets the **original reporter** mark their own alert as resolved — e.g. the
+missing person was found, or the traffic hazard has cleared. Resolving sets the
+status to 'resolved', which removes it from all public feeds. Authorities may
+also resolve any alert here.
+    """,
+)
+async def resolve_own_alert(
+    alert_id: int,
+    user: dict = Depends(get_current_user),
+):
+    alert = await db.fetchrow(
+        "SELECT id, title, user_id, status FROM alerts WHERE id = $1", alert_id
+    )
+    if not alert:
+        http_error(404, "That alert no longer exists.",
+                   "It may have already been resolved or removed.")
+
+    user_id      = int(user["id"]) if str(user["id"]).isdigit() else None
+    is_owner     = alert["user_id"] is not None and user_id == int(alert["user_id"])
+    is_authority = user.get("role") in ("authority", "super_admin")
+
+    if not (is_owner or is_authority):
+        http_error(403, "You can only resolve alerts you reported.",
+                   "Only the original reporter or an authority can resolve this alert.")
+
+    if alert["status"] == "resolved":
+        return {
+            "success": True, "alert_id": alert_id, "status": "resolved",
+            "message": "This alert is already resolved.",
+        }
+
+    await db.execute(
+        """UPDATE alerts
+           SET status = 'resolved', resolved_at = NOW(), resolved_by = $1
+           WHERE id = $2""",
+        user_id, alert_id,
+    )
+    await db.execute(
+        """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
+           VALUES ($1, 3, 'reporter_resolved', $2, $3)""",
+        alert_id, user_id,
+        "Resolved by original reporter" if is_owner else "Resolved by authority",
+    )
+
+    return {
+        "success": True,
+        "alert_id": alert_id,
+        "status": "resolved",
+        "message": "Alert resolved and removed from public feeds.",
+    }
+
+
 # ── GET /{alert_id}/responses — list tips (authority or alert owner) ─────────
 @router.get(
     "/{alert_id}/responses",

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user, require_authority
 from services.notification_service import notify_alert_status_change
+from core.geo import default_affected_radius
 from db import database as db
 
 router = APIRouter()
@@ -32,6 +33,8 @@ class CreateDisasterAlertRequest(BaseModel):
     affected_area: Optional[str] = None
     evacuation_routes: Optional[str] = None
     official_source: Optional[str] = "CitizenAlert Authority"
+    photo_url: Optional[str] = None
+    affected_radius_km: Optional[float] = None  # None → severity default
 
 
 class UpdateDisasterStatusRequest(BaseModel):
@@ -59,9 +62,12 @@ async def get_nearby_disasters(
         """SELECT
                a.id, a.title, a.description, a.severity,
                a.status, a.district, a.created_at,
+               a.photo_url, a.user_id AS reporter_id,
                da.hazard_type, da.affected_area,
                da.evacuation_routes, da.official_source,
                da.confirmation_count,
+               a.affected_radius_km,
+               ST_AsGeoJSON(a.affected_geom) AS affected_geojson,
                ROUND((ST_Distance(
                    COALESCE(
                        a.geom,
@@ -79,13 +85,25 @@ async def get_nearby_disasters(
              -- authority verifies them via the review queue.
              AND COALESCE(a.tvm_status, 'verified') IN ('verified', 'passed')
              AND ($3::text IS NULL OR da.hazard_type = $3)
-             AND ST_DWithin(
-                   COALESCE(
-                       a.geom,
-                       ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
-                   )::geography,
-                   ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-                   $4)
+             -- visible if: within search radius, OR the user is inside the
+             -- alert's affected polygon / circle (CAP-style area targeting)
+             AND (
+                   ST_DWithin(
+                       COALESCE(a.geom,
+                           ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
+                       )::geography,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                       $4)
+                OR (a.affected_geom IS NOT NULL AND ST_Intersects(
+                       a.affected_geom,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)))
+                OR (a.affected_radius_km IS NOT NULL AND ST_DWithin(
+                       COALESCE(a.geom,
+                           ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
+                       )::geography,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                       a.affected_radius_km * 1000))
+             )
            ORDER BY a.severity DESC, distance_km ASC
            LIMIT 50""",
         longitude, latitude, hazard_type, radius_km * 1000,
@@ -129,17 +147,19 @@ async def create_disaster_alert(
     user_id = int(user["id"])
 
     # Insert core alert (UADM)
+    radius = body.affected_radius_km or default_affected_radius("disaster", body.severity)
     row = await db.fetchrow(
         """INSERT INTO alerts
              (title, description, latitude, longitude, status, user_id,
-              alert_type, tvm_status, tvm_score, severity, district, geom)
+              alert_type, tvm_status, tvm_score, severity, district, photo_url,
+              affected_radius_km, geom)
            VALUES ($1, $2, $3, $4, 'active', $5,
-                   'disaster', 'verified', 1.0, $6, $7,
+                   'disaster', 'verified', 1.0, $6, $7, $8, $9,
                    ST_SetSRID(ST_MakePoint($4, $3), 4326))
            RETURNING id""",
         body.title, body.description,
         body.latitude, body.longitude,
-        user_id, body.severity, body.district,
+        user_id, body.severity, body.district, body.photo_url, radius,
     )
     alert_id = int(row["id"])
 
@@ -209,14 +229,16 @@ async def report_disaster(
     row = await db.fetchrow(
         """INSERT INTO alerts
              (title, description, latitude, longitude, status, user_id,
-              alert_type, tvm_status, tvm_score, severity, district, geom)
+              alert_type, tvm_status, tvm_score, severity, district, photo_url,
+              affected_radius_km, geom)
            VALUES ($1, $2, $3, $4, 'active', $5,
-                   'disaster', 'verified', 1.0, $6, $7,
+                   'disaster', 'verified', 1.0, $6, $7, $8, $9,
                    ST_SetSRID(ST_MakePoint($4, $3), 4326))
            RETURNING id""",
         body.title, body.description,
         body.latitude, body.longitude,
-        user_id, body.severity, body.district,
+        user_id, body.severity, body.district, body.photo_url,
+        body.affected_radius_km or default_affected_radius("disaster", body.severity),
     )
     alert_id = int(row["id"])
     cap_id   = f"LK-CA-DS-{int(datetime.now().timestamp())}-{str(alert_id).zfill(6)}"

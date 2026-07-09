@@ -10,6 +10,7 @@ from typing import Optional
 from core.security import get_current_user, require_authority
 from services.tvm_service import process_tvm_for_alert
 from services.notification_service import notify_alert_status_change
+from core.geo import default_affected_radius
 from db import database as db
 
 router = APIRouter()
@@ -71,6 +72,9 @@ async def get_nearby_health(
         f"""SELECT
                a.id, a.title, a.description, a.severity,
                a.status, a.tvm_status, a.district, a.created_at,
+               a.user_id AS reporter_id,
+               a.affected_radius_km,
+               ST_AsGeoJSON(a.affected_geom) AS affected_geojson,
                ph.disease_type, ph.case_count,
                ph.prevention_protocols, ph.health_facility,
                ph.official_source,
@@ -88,13 +92,23 @@ async def get_nearby_health(
              AND a.status = 'active'
              AND ($3::text IS NULL OR ph.disease_type = $3)
              {tvm_filter}
-             AND ST_DWithin(
-                   COALESCE(
-                       a.geom,
-                       ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
-                   )::geography,
-                   ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-                   $4)
+             AND (
+                   ST_DWithin(
+                       COALESCE(a.geom,
+                           ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
+                       )::geography,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                       $4)
+                OR (a.affected_geom IS NOT NULL AND ST_Intersects(
+                       a.affected_geom,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)))
+                OR (a.affected_radius_km IS NOT NULL AND ST_DWithin(
+                       COALESCE(a.geom,
+                           ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
+                       )::geography,
+                       ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                       a.affected_radius_km * 1000))
+             )
            ORDER BY a.severity DESC, distance_km ASC
            LIMIT 50""",
         longitude, latitude, disease_type, radius_km * 1000,
@@ -144,14 +158,16 @@ async def create_health_alert(
     row = await db.fetchrow(
         """INSERT INTO alerts
              (title, description, latitude, longitude, status, user_id,
-              alert_type, tvm_status, tvm_score, severity, district, geom)
+              alert_type, tvm_status, tvm_score, severity, district,
+              affected_radius_km, geom)
            VALUES ($1, $2, $3, $4, 'active', $5,
-                   'health', $6, 0, $7, $8,
+                   'health', $6, 0, $7, $8, $9,
                    ST_SetSRID(ST_MakePoint($4, $3), 4326))
            RETURNING id""",
         body.title, body.description,
         body.latitude, body.longitude,
         user_id, tvm_status, body.severity, body.district,
+        default_affected_radius("health", body.severity),
     )
     alert_id = int(row["id"])
     cap_id   = f"LK-CA-PH-{int(datetime.now().timestamp())}-{str(alert_id).zfill(6)}"

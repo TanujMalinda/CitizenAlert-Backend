@@ -36,6 +36,7 @@ async def get_nearby(
     rows = await db.fetch(
         """SELECT
                a.id, a.title, a.severity, a.tvm_status,
+               a.user_id AS reporter_id,
                COALESCE(a.tvm_score, 0)::float AS confidence_score,
                a.created_at,
                FALSE AS cctv_corroborated,

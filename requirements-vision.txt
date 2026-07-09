@@ -1,0 +1,5 @@
+# Extra dependencies for the Vision AI (incident image classification) feature.
+# Install once:  pip install -r requirements-vision.txt
+onnxruntime>=1.17
+Pillow>=10.0
+numpy>=1.24
