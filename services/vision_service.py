@@ -17,6 +17,7 @@ The exported model embeds MobileNetV2 preprocessing, so input here is raw
 import base64
 import io
 import json
+import os
 from pathlib import Path
 
 from PIL import Image
@@ -51,8 +52,15 @@ def _map_class(name: str) -> dict:
     return CLASS_TO_ALERT.get(name.strip().lower(),
                               {"alert_type": None, "sub_type": None})
 
-# Below this confidence the prediction is reported but marked unreliable.
-CONFIDENCE_THRESHOLD = 0.60
+# Confidence floor. A prediction below this is treated as "not confident":
+# the app should ask the user to confirm/pick the type rather than auto-routing.
+# Override with the VISION_CONFIDENCE_THRESHOLD env var.
+CONFIDENCE_THRESHOLD = float(os.getenv("VISION_CONFIDENCE_THRESHOLD", "0.65"))
+
+# The gap between the top two scores must be at least this much, otherwise the
+# call is "ambiguous" (two classes almost tied) → also not confident. This
+# catches confident-looking-but-borderline cases a single threshold misses.
+MIN_MARGIN = float(os.getenv("VISION_MIN_MARGIN", "0.20"))
 
 _session = None
 _labels: list[str] = []
@@ -123,17 +131,30 @@ def classify_image(image_data: str) -> dict:
     input_name = _session.get_inputs()[0].name
     scores = _session.run(None, {input_name: x})[0][0]
 
-    best = int(scores.argmax())
+    order = list(np.argsort(scores)[::-1])
+    best = int(order[0])
     predicted = _labels[best]
     confidence = float(scores[best])
+    runner_up = float(scores[int(order[1])]) if len(order) > 1 else 0.0
+    margin = confidence - runner_up
     mapping = _map_class(predicted)
+
+    # Confidence floor: pass only if the top score clears the threshold AND is
+    # clearly ahead of the second guess. Otherwise it's "not confident" and the
+    # app routes the user to manual selection instead of auto-filling a report.
+    confident = (confidence >= CONFIDENCE_THRESHOLD) and (margin >= MIN_MARGIN)
 
     return {
         "engine": "onnx",
         "predicted": predicted,
         "confidence": round(confidence, 4),
-        "reliable": confidence >= CONFIDENCE_THRESHOLD,
-        "alert_type": mapping["alert_type"],
-        "sub_type": mapping["sub_type"],
+        "margin": round(margin, 4),
+        "reliable": confident,           # kept for backward compatibility
+        "confident": confident,
+        # When not confident we suppress the routing target so the app won't
+        # auto-open a (likely wrong) report; the guess is still returned as a hint.
+        "alert_type": mapping["alert_type"] if confident else None,
+        "sub_type": mapping["sub_type"] if confident else None,
+        "suggested_type": mapping["alert_type"],  # the raw guess, for the hint
         "all_scores": {label: round(float(s), 4) for label, s in zip(_labels, scores)},
     }

@@ -214,10 +214,35 @@ async def get_stats(user: dict = Depends(require_authority)):
     )
     users_row = await db.fetchrow("SELECT COUNT(*) AS users FROM users")
 
+    # Alerts per district — powers the "most affected area" chart
+    district_rows = await db.fetch(
+        """SELECT district, COUNT(*) AS total
+           FROM alerts
+           WHERE district IS NOT NULL AND district <> ''
+           GROUP BY district
+           ORDER BY total DESC
+           LIMIT 10"""
+    )
+    by_district = [dict(r) for r in district_rows] if district_rows else []
+
+    # Daily alert volume for the last 14 days — powers the trend line chart.
+    # Gaps (days with no alerts) are back-filled on the client.
+    daily_rows = await db.fetch(
+        """SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day,
+                  COUNT(*) AS total
+           FROM alerts
+           WHERE created_at >= (CURRENT_DATE - INTERVAL '13 days')
+           GROUP BY day
+           ORDER BY day"""
+    )
+    daily = [dict(r) for r in daily_rows] if daily_rows else []
+
     return {
         "success": True,
         "totals": dict(totals) if totals else {},
         "by_type": by_type,
+        "by_district": by_district,
+        "daily": daily,
         "registered_users": users_row["users"] if users_row else 0,
     }
 
