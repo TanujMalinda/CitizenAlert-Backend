@@ -124,6 +124,7 @@ def classify_image(image_data: str) -> dict:
         }
 
     import numpy as np
+    original = img  # keep full-size image for the CLIP cross-check
     img = img.resize((_img_size, _img_size))
     # Raw 0-255 float32 — the exported graph contains its own preprocessing.
     x = np.asarray(img, dtype=np.float32)[None, ...]
@@ -143,6 +144,39 @@ def classify_image(image_data: str) -> dict:
     # clearly ahead of the second guess. Otherwise it's "not confident" and the
     # app routes the user to manual selection instead of auto-filling a report.
     confident = (confidence >= CONFIDENCE_THRESHOLD) and (margin >= MIN_MARGIN)
+    suggested = mapping["alert_type"]
+    sub_type = mapping["sub_type"]
+
+    # ── CLIP cross-check (zero-shot second witness) ──────────────────────────
+    # Agreement between two independent models rescues borderline results;
+    # a confident disagreement vetoes the classifier (its known failure mode is
+    # being confidently wrong on visually-similar scenes).
+    fusion = "model_only"
+    clip_info = None
+    try:
+        from services import clip_service
+        clip = clip_service.classify(original)
+        if clip is not None:
+            clip_map = _map_class(clip["predicted"])
+            clip_info = {"predicted": clip["predicted"],
+                         "confidence": clip["confidence"],
+                         "alert_type": clip_map["alert_type"]}
+            same_verdict = clip_map["alert_type"] == mapping["alert_type"]
+            if clip["confidence"] >= 0.50 and same_verdict:
+                fusion = "agree"
+                # two independent models agree → relax the floor
+                confident = confidence >= 0.45 and margin >= 0.10
+            elif clip["confidence"] >= 0.50 and not same_verdict:
+                fusion = "clip_veto"
+                confident = False
+                # prefer CLIP's suggestion when it points at a real incident
+                if clip_map["alert_type"] is not None:
+                    suggested = clip_map["alert_type"]
+                    sub_type = clip_map["sub_type"]
+            else:
+                fusion = "clip_weak"   # CLIP unsure — model stands alone
+    except Exception:
+        fusion = "clip_unavailable"
 
     return {
         "engine": "onnx",
@@ -151,10 +185,13 @@ def classify_image(image_data: str) -> dict:
         "margin": round(margin, 4),
         "reliable": confident,           # kept for backward compatibility
         "confident": confident,
+        "fusion": fusion,
+        "clip": clip_info,
         # When not confident we suppress the routing target so the app won't
         # auto-open a (likely wrong) report; the guess is still returned as a hint.
         "alert_type": mapping["alert_type"] if confident else None,
         "sub_type": mapping["sub_type"] if confident else None,
-        "suggested_type": mapping["alert_type"],  # the raw guess, for the hint
+        "suggested_type": suggested,     # best available hint (model or CLIP)
+        "suggested_sub_type": sub_type,
         "all_scores": {label: round(float(s), 4) for label, s in zip(_labels, scores)},
     }

@@ -31,7 +31,7 @@ from api.routes import (
     auth, missing_persons, tvm, cctv,
     disaster_alerts, crime_reports,
     traffic_hazards, public_health, authority,
-    alert_responses, notifications, vision,
+    alert_responses, notifications, vision, routing,
 )
 
 # ── Lifespan: runs on startup & shutdown ─────────────────────────────────────
@@ -124,6 +124,7 @@ app.include_router(authority.router,       prefix="/api/authority",       tags=[
 app.include_router(alert_responses.router, prefix="/api/alerts",          tags=["Alert Tips"])
 app.include_router(notifications.router,   prefix="/api/notifications",   tags=["Notifications"])
 app.include_router(vision.router,          prefix="/api/vision",          tags=["Vision AI"])
+app.include_router(routing.router,         prefix="/api/routing",         tags=["Routing"])
 
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/api/health", tags=["System"])
