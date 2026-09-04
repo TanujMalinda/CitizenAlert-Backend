@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 from core.security import get_current_user
-from services.tvm_service import process_tvm_for_alert, TVM_AUTO_VERIFY_THRESHOLD, TVM_AUTHORITY_REVIEW_THRESHOLD
+from services.tvm_service import (
+    process_tvm_for_alert,
+    TVM_AUTO_VERIFY_THRESHOLD,
+    TVM_AUTHORITY_REVIEW_THRESHOLD,
+    WEIGHTS,
+)
 
 router = APIRouter()
 
@@ -73,13 +78,9 @@ async def get_thresholds(user: dict = Depends(get_current_user)):
     return {
         "auto_verify_threshold":      TVM_AUTO_VERIFY_THRESHOLD,
         "authority_review_threshold": TVM_AUTHORITY_REVIEW_THRESHOLD,
-        "cctv_boost":                 0.15,
-        "score_weights": {
-            "reporter_trust":        0.30,
-            "location_plausibility": 0.25,
-            "time_plausibility":     0.20,
-            "report_corroboration":  0.25,
-        },
+        # Read from the scoring service so this can never drift from the
+        # weights actually used to verify reports.
+        "score_weights":             WEIGHTS,
         "routing_logic": {
             f">= {TVM_AUTO_VERIFY_THRESHOLD}":      "auto_verified",
             f">= {TVM_AUTHORITY_REVIEW_THRESHOLD}": "authority_review (Tier 3)",

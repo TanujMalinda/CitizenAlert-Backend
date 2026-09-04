@@ -16,7 +16,11 @@ VIVA NOTE: The score weights below are grounded in literature:
   - location_plaus.  (0.25): Nielsen et al. 2020 — spatial plausibility
   - time_plaus.      (0.20): derived from human mobility research
   - corroboration    (0.25): crowd consensus principle from Waze studies
-  - cctv_boost       (+0.15): NOVEL CONTRIBUTION of this research
+
+A simulated CCTV corroboration bonus was previously applied here. It was removed
+because no real CCTV metadata source is used: the check returned mock signals for
+three hardcoded Colombo zones, so it could inflate a score without any evidence
+behind it. Scoring is now based solely on the four weighted factors above.
 """
 
 import math
@@ -28,9 +32,6 @@ from db import database as db
 # ── Thresholds ────────────────────────────────────────────────────────────────
 TVM_AUTO_VERIFY_THRESHOLD    = 0.80
 TVM_AUTHORITY_REVIEW_THRESHOLD = 0.50
-TVM_CCTV_BOOST               = 0.15
-CCTV_TIME_WINDOW_MINUTES     = 30
-CCTV_PROXIMITY_METERS        = 200
 
 # Sri Lanka bounding box (WGS84)
 SL_BOUNDS = {"min_lat": 5.916, "max_lat": 9.836, "min_lng": 79.695, "max_lng": 81.879}
@@ -59,8 +60,6 @@ class ScoreComponents:
     location_plausibility: float = 0.0
     time_plausibility: float = 0.0
     report_corroboration: float = 0.0
-    cctv_boost: float = 0.0
-    cctv_signal: str | None = None
 
 
 @dataclass
@@ -68,7 +67,6 @@ class Tier2Result:
     score: float
     components: ScoreComponents
     action: str          # "auto_verified" | "authority_review" | "auto_rejected"
-    cctv_corroborated: bool = False
 
 
 @dataclass
@@ -171,14 +169,6 @@ async def run_tier2(report: dict, alert: dict, reporter: dict) -> Tier2Result:
         c.report_corroboration  * WEIGHTS["report_corroboration"]
     )
 
-    # CCTV boost — novel contribution (simulated for prototype)
-    cctv     = await _check_cctv(lat, lng, s_time)
-    cctv_hit = cctv is not None
-    if cctv_hit:
-        score        = min(1.0, score + TVM_CCTV_BOOST)
-        c.cctv_boost  = TVM_CCTV_BOOST
-        c.cctv_signal = cctv.get("signal_type")
-
     score = round(score, 3)
 
     # Route based on thresholds
@@ -189,7 +179,7 @@ async def run_tier2(report: dict, alert: dict, reporter: dict) -> Tier2Result:
     else:
         action = "auto_rejected"
 
-    return Tier2Result(score=score, components=c, action=action, cctv_corroborated=cctv_hit)
+    return Tier2Result(score=score, components=c, action=action)
 
 
 # ── Full TVM Pipeline ─────────────────────────────────────────────────────────
@@ -292,9 +282,14 @@ async def process_tvm_for_alert(
     # Tier 2 — confidence scoring
     # alert={} → location_plausibility defaults to 0.70, corroboration to 0.50
     t2 = await run_tier2(report, {}, reporter)
+    # Store the individual factor values, not just the total: the dashboard
+    # explains to reviewers how each factor contributed to the final score,
+    # and those inputs (trust, corroboration) change over time so the score
+    # cannot be reconstructed reliably after the fact.
     await _log_tvm(
         alert_id=alert_id, tier=2, action="score_calculated",
-        notes=f"score={t2.score} cctv_boost={t2.components.cctv_boost}",
+        notes=f"score={t2.score} action={t2.action} "
+              f"components={json.dumps(t2.components.__dict__)}",
     )
 
     return TVMResult(
@@ -375,33 +370,18 @@ async def _corroboration(alert_id, lat: float, lng: float) -> float:
     return {0: 0.50, 1: 0.65, 2: 0.75}.get(n, 0.90)
 
 
-async def _check_cctv(lat: float, lng: float, s_time) -> dict | None:
-    """
-    Simulated CCTV metadata check — privacy-preserving (no video accessed).
-    Returns a mock signal for prototype demonstration.
-    VIVA NOTE: In production this queries real CCTV metadata API.
-               For evaluation, returns simulated signals based on known
-               high-camera-density areas in Colombo.
-    """
-    # Colombo high-density CCTV zones (simulated)
-    colombo_zones = [
-        {"lat": 6.9271, "lng": 79.8612, "name": "Colombo Fort"},
-        {"lat": 6.9147, "lng": 79.8772, "name": "Pettah"},
-        {"lat": 6.9022, "lng": 79.8607, "name": "Majestic City"},
-    ]
-    for zone in colombo_zones:
-        dist = _haversine_km(lat, lng, zone["lat"], zone["lng"])
-        if dist <= 0.5:  # within 500m of a known CCTV zone
-            return {"signal_type": "motion_detected", "confidence": 0.75,
-                    "zone": zone["name"]}
-    return None
-
-
 async def _log_tvm(alert_id, tier: int, action: str, notes: str = "", actor_id=None):
     """
     Log TVM decision to tvm_log table.
     FIX: uses 'tvm_log' not 'tvm_audit_log', matches real schema.
+
+    A dry-run evaluation (/api/tvm/evaluate) has no alert to attach the entry
+    to, and tvm_log.alert_id is NOT NULL, so scoring-only calls skip logging
+    rather than raising.
     """
+    if alert_id is None:
+        return
+
     await db.execute(
         """INSERT INTO tvm_log (alert_id, tier, action, actor_id, notes)
            VALUES ($1, $2, $3, $4, $5)""",

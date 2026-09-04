@@ -153,13 +153,25 @@ async def create_traffic_hazard(
 
     user_id = int(user["id"]) if str(user["id"]).isdigit() else None
 
-    # Check for duplicate report within 500m in last 30 minutes
+    # Check for a duplicate report within 500m in the last 30 minutes.
+    #
+    # Two qualifiers keep this from swallowing genuinely new reports:
+    #   * same hazard_type only — a pothole next to an accident is its own
+    #     incident, not a confirmation of the accident.
+    #   * skip alerts this user has already confirmed — they cannot confirm it
+    #     twice, so merging would silently discard their report (title,
+    #     description and photo included). Reporting again at a spot you have
+    #     reported before means a NEW incident, so let it create its own alert.
     existing = await db.fetchval(
         """SELECT a.id FROM alerts a
            JOIN traffic_hazards th ON th.alert_id = a.id
            WHERE a.alert_type = 'traffic'
              AND a.status = 'active'
+             AND th.hazard_type = $3
              AND a.created_at > NOW() - INTERVAL '30 minutes'
+             AND NOT EXISTS (
+                   SELECT 1 FROM alert_confirmations ac
+                   WHERE ac.alert_id = a.id AND ac.user_id = $4)
              AND ST_DWithin(
                    COALESCE(a.geom,
                        ST_SetSRID(ST_MakePoint(a.longitude, a.latitude), 4326)
@@ -167,7 +179,7 @@ async def create_traffic_hazard(
                    ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
                    500)
            LIMIT 1""",
-        body.longitude, body.latitude,
+        body.longitude, body.latitude, body.hazard_type, user_id,
     )
 
     if existing:
@@ -210,7 +222,9 @@ async def create_traffic_hazard(
             "confirmation_count": int(new_count or 0),
             "tvm_status":        "verified" if new_count and int(new_count) >= CONSENSUS_AUTO_VERIFY_COUNT
                                  else "pending_consensus",
-            "message":           "Duplicate detected — confirmation count incremented",
+            "message":           "Duplicate detected — confirmation count incremented"
+                                 if new_confirm else
+                                 "Duplicate detected — matched an existing hazard",
         }
 
     # Tier 1 filter — validate before creating the alert

@@ -66,7 +66,7 @@ A geo-aware, citizen-assisted multi-purpose public safety alert system for Sri L
 
 ### Core Research Contributions
 - **TVM** — 3-tier verification mechanism (novel research contribution)
-- **CCTV Boost** — privacy-preserving cross-modal signal corroboration (+15% confidence)
+- **Cross-Modal Image Corroboration** — fine-tuned MobileNetV2 fused with zero-shot CLIP
 - **Geo-Alert Engine** — PostGIS ST_DWithin location-based targeting (GEOGRAPHY type)
 - **UADM** — Unified Alert Data Model normalising all five hazard categories
 
